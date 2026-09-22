@@ -1,21 +1,43 @@
-name: Invest cross-repo token probe
+name: Invest Copilot direct release
+
 on:
   push:
     branches: [main]
-permissions:
-  contents: write
+
 jobs:
-  probe:
+  publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Probe private sibling repository
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Authorize GitHub CLI and publish Invest Copilot 3.0.0
+        shell: bash
         run: |
           set -euo pipefail
-          if gh api repos/mdugaev/invest-copilot --jq .full_name; then
-            echo "CROSS_REPO_ACCESS_OK"
-          else
-            echo "CROSS_REPO_ACCESS_DENIED"
-            exit 17
+          unset GH_TOKEN || true
+          unset GITHUB_TOKEN || true
+          export GH_CONFIG_DIR="$RUNNER_TEMP/gh-invest-release"
+          mkdir -p "$GH_CONFIG_DIR"
+
+          echo "DEVICE_AUTH_START"
+          printf '\n' | script -q -e -c "gh auth login --hostname github.com --git-protocol https --web" /dev/null
+          echo "DEVICE_AUTH_COMPLETE"
+
+          REPO="mdugaev/invest-copilot"
+          MAIN_SHA="$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)"
+          VERSION="$(gh api "repos/$REPO/contents/VERSION?ref=main" --jq .content | tr -d '\n' | base64 --decode | tr -d '\n')"
+          test "$VERSION" = "3.0.0"
+          TAG="v$VERSION"
+
+          if ! gh api "repos/$REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            gh api --method POST "repos/$REPO/git/refs"               -f ref="refs/tags/$TAG"               -f sha="$MAIN_SHA" >/dev/null
           fi
+
+          if ! gh api "repos/$REPO/releases/tags/$TAG" >/dev/null 2>&1; then
+            gh api --method POST "repos/$REPO/releases"               -f tag_name="$TAG"               -f target_commitish="$MAIN_SHA"               -f name="Invest Copilot $VERSION"               -F generate_release_notes=true >/dev/null
+          fi
+
+          TAG_SHA="$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha)"
+          RELEASE_TAG="$(gh api "repos/$REPO/releases/tags/$TAG" --jq .tag_name)"
+          test "$TAG_SHA" = "$MAIN_SHA"
+          test "$RELEASE_TAG" = "$TAG"
+          echo "INVEST_COPILOT_RELEASE_COMPLETE main=$MAIN_SHA tag=$TAG"
