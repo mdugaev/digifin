@@ -9,18 +9,63 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Authorize GitHub CLI and publish Invest Copilot 3.0.0
+      - name: Request GitHub CLI device code
+        id: device
         shell: bash
         run: |
           set -euo pipefail
-          unset GH_TOKEN || true
-          unset GITHUB_TOKEN || true
-          export GH_CONFIG_DIR="$RUNNER_TEMP/gh-invest-release"
-          mkdir -p "$GH_CONFIG_DIR"
+          CLIENT_ID="178c6fc778ccc68e1d6a"
+          RESP="$(curl -fsSL -X POST https://github.com/login/device/code             -H 'Accept: application/json'             --data-urlencode "client_id=$CLIENT_ID"             --data-urlencode 'scope=repo read:org gist')"
+          printf '%s' "$RESP" > "$RUNNER_TEMP/device.json"
+          USER_CODE="$(jq -r '.user_code' "$RUNNER_TEMP/device.json")"
+          VERIFY_URI="$(jq -r '.verification_uri' "$RUNNER_TEMP/device.json")"
+          test -n "$USER_CODE"
+          test -n "$VERIFY_URI"
+          {
+            echo "$VERIFY_URI"
+            echo "$USER_CODE"
+          } > "$RUNNER_TEMP/device-user-code.txt"
 
-          echo "DEVICE_AUTH_START"
-          printf '\n' | script -q -e -c "gh auth login --hostname github.com --git-protocol https --web" /dev/null
-          echo "DEVICE_AUTH_COMPLETE"
+      - name: Upload one-time authorization code
+        uses: actions/upload-artifact@v4
+        with:
+          name: invest-release-device-code
+          path: ${{ runner.temp }}/device-user-code.txt
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Wait for authorization and publish Invest Copilot 3.0.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLIENT_ID="178c6fc778ccc68e1d6a"
+          DEVICE_CODE="$(jq -r '.device_code' "$RUNNER_TEMP/device.json")"
+          INTERVAL="$(jq -r '.interval // 5' "$RUNNER_TEMP/device.json")"
+          TOKEN=""
+
+          for _ in $(seq 1 180); do
+            RESP="$(curl -fsSL -X POST https://github.com/login/oauth/access_token               -H 'Accept: application/json'               --data-urlencode "client_id=$CLIENT_ID"               --data-urlencode "device_code=$DEVICE_CODE"               --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:device_code')"
+            TOKEN="$(printf '%s' "$RESP" | jq -r '.access_token // empty')"
+            if [[ -n "$TOKEN" ]]; then
+              break
+            fi
+            ERR="$(printf '%s' "$RESP" | jq -r '.error // empty')"
+            case "$ERR" in
+              authorization_pending) sleep "$INTERVAL" ;;
+              slow_down) INTERVAL=$((INTERVAL + 5)); sleep "$INTERVAL" ;;
+              access_denied|expired_token)
+                echo "Device authorization failed: $ERR" >&2
+                exit 20
+                ;;
+              *)
+                echo "Unexpected device-flow response: $ERR" >&2
+                exit 21
+                ;;
+            esac
+          done
+
+          test -n "$TOKEN"
+          export GH_TOKEN="$TOKEN"
 
           REPO="mdugaev/invest-copilot"
           MAIN_SHA="$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)"
@@ -40,4 +85,5 @@ jobs:
           RELEASE_TAG="$(gh api "repos/$REPO/releases/tags/$TAG" --jq .tag_name)"
           test "$TAG_SHA" = "$MAIN_SHA"
           test "$RELEASE_TAG" = "$TAG"
+          unset GH_TOKEN
           echo "INVEST_COPILOT_RELEASE_COMPLETE main=$MAIN_SHA tag=$TAG"
