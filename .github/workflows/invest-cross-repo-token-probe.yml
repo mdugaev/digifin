@@ -1,0 +1,21 @@
+name: Invest cross-repo token probe
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe private sibling repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api repos/mdugaev/invest-copilot --jq .full_name; then
+            echo "CROSS_REPO_ACCESS_OK"
+          else
+            echo "CROSS_REPO_ACCESS_DENIED"
+            exit 17
+          fi
