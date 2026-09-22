@@ -1,0 +1,12 @@
+name: Invest release runner probe
+on:
+  push:
+    branches: [main]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          set -euo pipefail
+          echo "PUBLIC_HOSTED_RUNNER_OK"
+          gh --version
